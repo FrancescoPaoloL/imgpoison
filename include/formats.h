@@ -1,6 +1,17 @@
 #ifndef FORMATS_H
 #define FORMATS_H
 
+
+#define LSB_HEADER_BITS   32
+#define MAX_PAYLOAD_BYTES 65535
+
+
+#define CHIP_SIZE      256    /* pixels per block                        */
+#define STRENGTH        10    /* embedding strength per chip sample      */
+#define HEADER_BITS     32    /* 32-bit payload length header            */
+#define MAX_PAYLOAD  65535
+
+
 /* PNG signature — see libpng.org/pub/png/spec/1.2/PNG-Structure.html */
 #define PNG_SIG_LEN         8
 #define PNG_SIG_BYTES       { 0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A }
