@@ -7,7 +7,6 @@
 
 
 #define CHIP_SIZE      256    /* pixels per block                        */
-#define STRENGTH        10    /* embedding strength per chip sample      */
 #define HEADER_BITS     32    /* 32-bit payload length header            */
 #define MAX_PAYLOAD  65535
 

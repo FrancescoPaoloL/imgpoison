@@ -52,7 +52,6 @@ static int lcg_bit(LCG *r) {
 
 
 
-
 /* generate chip[CHIP_SIZE] of +1/-1 values */
 static void make_chip(LCG *r, float *chip)
 {
@@ -118,15 +117,17 @@ static void shuffle_indices(size_t *idx, size_t n, uint32_t seed)
  * bit=1 -> signal=+1, bit=0 -> signal=-1.
  * using two blocks instead of one cancels out background brightness. */
 static void embed_bit(uint8_t *pixels, const size_t *perm, size_t pair_offset,
-                      uint32_t ch, int bit, LCG *rng) {
+                      uint32_t ch, int bit, LCG *rng, int strength) {
     float  signal  = bit ? 1.0f : -1.0f;
     float  chip[CHIP_SIZE];
 
     make_chip(rng, chip);
 
     for (int i = 0; i < CHIP_SIZE; i++) {
-        add_signal(pixels + perm[pair_offset + i] * ch, ch,  signal * chip[i] * STRENGTH);
-        add_signal(pixels + perm[pair_offset + CHIP_SIZE + i] * ch, ch, -signal * chip[i] * STRENGTH);
+        add_signal(pixels + perm[pair_offset + i] * ch, ch,
+                   signal * chip[i] * strength);
+        add_signal(pixels + perm[pair_offset + CHIP_SIZE + i] * ch, ch,
+                  -signal * chip[i] * strength);
     }
 }
 
@@ -153,11 +154,10 @@ static int extract_bit(const uint8_t *pixels, const size_t *perm, size_t pair_of
 }
 
 
-
 void ss_embed(uint8_t *pixels, size_t px_size,
               uint32_t width, uint32_t channels,
               const uint8_t *payload, size_t payload_len,
-              uint32_t seed) {
+              uint32_t seed, uint32_t strength){
     (void)width;
 
     if (payload_len == 0 || payload_len > MAX_PAYLOAD) {
@@ -195,24 +195,26 @@ void ss_embed(uint8_t *pixels, size_t px_size,
     LCG rng;
     lcg_seed(&rng, seed);
 
+    int str = (int)strength;
+
     /* embed 32-bit length header first so extract knows how many bits to read */
     for (int i = 0; i < HEADER_BITS; i++)
         embed_bit(pixels, perm, (size_t)i * 2 * CHIP_SIZE, channels,
-                  (payload_len >> (31 - i)) & 1, &rng);
+                  (payload_len >> (31 - i)) & 1, &rng, str);
 
     /* embed payload MSB first, one bit at a time */
     for (size_t i = 0; i < payload_len; i++)
         for (int b = 0; b < 8; b++)
             embed_bit(pixels, perm,
                       (size_t)(HEADER_BITS + i*8 + b) * 2 * CHIP_SIZE,
-                      channels, (payload[i] >> (7 - b)) & 1, &rng);
+                      channels, (payload[i] >> (7 - b)) & 1, &rng, str);
 
     free(perm);
 
     printf("SS embed : %zu bytes, seed=%u, strength=%d, chip=%d\n",
-           payload_len, seed, STRENGTH, CHIP_SIZE);
+           payload_len, seed, str, CHIP_SIZE);
     printf("SNR est. : %.0f:1 vs JPEG noise\n",
-           (float)(2 * STRENGTH * CHIP_SIZE) / (3.0f * sqrtf(CHIP_SIZE)));
+           (float)(2 * strength * CHIP_SIZE) / (3.0f * sqrtf(CHIP_SIZE)));
 }
 
 
@@ -268,4 +270,3 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
     *out_len = payload_len;
     return payload;
 }
-

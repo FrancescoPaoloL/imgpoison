@@ -8,10 +8,10 @@
 static void usage(const char *prog) {
     fprintf(stderr,
         "usage:\n"
-        "  %s --extract [--detect] <image.png>\n"
-        "  %s --extract --method ss --seed <n> <image.png>\n"
-        "  %s --embed --method lsb --payload <text> <in.png> <out.png>\n"
-        "  %s --embed --method ss  --payload <text> --seed <n> <in.png> <out.png>\n",
+        "  %s --extract [--detect] <image.png|jpg>\n"
+        "  %s --extract --method ss --seed <n> <image.png|jpg>\n"
+        "  %s --embed --method lsb --payload <text> <in.png|jpg> <out.png|jpg>\n"
+        "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] <in.png|jpg> <out.png|jpg>\n",
         prog, prog, prog, prog);
     exit(1);
 }
@@ -52,21 +52,22 @@ static void cmd_extract(int argc, char *argv[]) {
             free(payload);
         }
     }
-
     image_free(&img);
 }
 
 static void cmd_embed(int argc, char *argv[]) {
-    const char *method  = "lsb";
-    const char *payload = NULL;
-    const char *input   = NULL;
-    const char *output  = NULL;
-    uint32_t    seed    = 42;
+    const char *method   = "lsb";
+    const char *payload  = NULL;
+    const char *input    = NULL;
+    const char *output   = NULL;
+    uint32_t    seed     = 42;
+    uint32_t    strength = 10;  /* default — robust at q95 */
 
     for (int i = 0; i < argc - 2; i++) {
-        if (strcmp(argv[i], "--method")  == 0) method  = argv[++i];
-        if (strcmp(argv[i], "--payload") == 0) payload = argv[++i];
-        if (strcmp(argv[i], "--seed")    == 0) seed    = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--method")   == 0) method   = argv[++i];
+        if (strcmp(argv[i], "--payload")  == 0) payload  = argv[++i];
+        if (strcmp(argv[i], "--seed")     == 0) seed     = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--strength") == 0) strength = (uint32_t)atoi(argv[++i]);
     }
     input  = argv[argc - 2];
     output = argv[argc - 1];
@@ -78,7 +79,7 @@ static void cmd_embed(int argc, char *argv[]) {
 
     if (strcmp(method, "ss") == 0) {
         ss_embed(img.pixels, img.size, img.width, img.channels,
-                 (const uint8_t *)payload, strlen(payload), seed);
+                 (const uint8_t *)payload, strlen(payload), seed, strength);
     } else {
         lsb_embed(img.pixels, img.size,
                   (const uint8_t *)payload, strlen(payload));
@@ -88,7 +89,6 @@ static void cmd_embed(int argc, char *argv[]) {
     printf("Saved    : %s\n", output);
     image_free(&img);
 }
-
 
 int main(int argc, char *argv[]) {
     if (argc < 2) usage(argv[0]);
