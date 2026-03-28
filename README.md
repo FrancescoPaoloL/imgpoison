@@ -77,6 +77,17 @@ because JPEG randomizes the exact bit used to store the data.
 The seed controls a pseudorandom sequence (chip) that scrambles which pixels
 are used and how. Without the seed, extraction is not possible.
 
+## Tools
+
+**diffmap** — visualize the difference between original and stego image.
+Useful to verify the embedding is working correctly.
+
+    python tests/diffmap.py img/original.png img/stego.jpg
+
+What to look for:
+
+- SS  → uniform salt-and-pepper noise across the whole image (signal spread everywhere)
+- LSB → a small bright patch in the top-left corner (payload concentrated at the start)
 
 ## Pending
 
