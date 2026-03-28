@@ -35,6 +35,8 @@
 *.i*86
 *.x86_64
 *.hex
+/bin
+
 
 # Debug files
 *.dSYM/
@@ -51,9 +53,6 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-
-mersenne_primes
-
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
@@ -64,3 +63,8 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 _deps
+
+# custom
+notes.txt
+/img/stego.jpg
+
