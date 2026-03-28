@@ -2,6 +2,7 @@
 #include "../include/image.h"
 #include "../include/png_priv.h"
 #include "../include/jpeg_priv.h"
+#include <string.h>
 #include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +36,9 @@ Image image_load(const char *path)
 
 void image_save(const Image *img, const char *path)
 {
-    if (detect_format(path) == IMG_FMT_JPEG)
+    /* for saving we check the extension — the file does not exist yet */
+    const char *dot = strrchr(path, '.');
+    if (dot && (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0))
         jpeg_save(img, path);
     else
         save_png(img, path);
