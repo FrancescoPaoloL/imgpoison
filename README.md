@@ -89,6 +89,23 @@ What to look for:
 - SS  → uniform salt-and-pepper noise across the whole image (signal spread everywhere)
 - LSB → a small bright patch in the top-left corner (payload concentrated at the start)
 
+**test_robustness** — tests payload survival through image transformations.
+
+    python tests/test_robustness.py
+
+Results with default settings (STRENGTH=10, CHIP_SIZE=256):
+
+| Transformation         | Result |
+|------------------------|--------|
+| baseline               | PASS   |
+| recompress q90         | PASS   |
+| recompress q85         | FAIL   |
+| recompress q75         | FAIL   |
+| rotate 1 degree        | FAIL   |
+
+q85 and below exceed the noise threshold at STRENGTH=10.
+Increase --strength to improve robustness at the cost of visibility.
+
 ## Pending
 
 - Shell script regression test (embed → extract round-trip)
