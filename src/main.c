@@ -61,7 +61,9 @@ static void cmd_embed(int argc, char *argv[]) {
     const char *input    = NULL;
     const char *output   = NULL;
     uint32_t    seed     = 42;
-    uint32_t    strength = 10;  /* default — robust at q95 */
+    uint32_t    strength = 10;  // how hard the signal is pushed into the pixels
+                                // higher = more robust after JPEG, more visible.
+                                // 10 survives JPEG at quality 95 with no bit errors
 
     for (int i = 0; i < argc - 2; i++) {
         if (strcmp(argv[i], "--method")   == 0) method   = argv[++i];

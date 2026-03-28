@@ -15,6 +15,14 @@
 #define PNG_SIG_LEN         8
 #define PNG_SIG_BYTES       { 0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A }
 
+
+/* file magic bytes for format detection.
+ * read from the first bytes of the file — more reliable than extension.
+ * ref: en.wikipedia.org/wiki/List_of_file_signatures */
+#define JPEG_SIG_B0  0xFF
+#define JPEG_SIG_B1  0xD8  /* JPEG always starts with FF D8 */
+
+
 /* LCG constants from Numerical Recipes in C, chapter 7.
  * see: en.wikipedia.org/wiki/Linear_congruential_generator
  *      "Parameters in common use" -> Numerical Recipes */

@@ -1,21 +1,30 @@
+#include "../include/formats.h"
 #include "../include/image.h"
 #include "../include/png_priv.h"
 #include "../include/jpeg_priv.h"
 #include <strings.h>
-#include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
-/* infer format from file extension — .jpg/.jpeg -> JPEG, else PNG.
- * we trust the extension rather than reading magic bytes at runtime. */
+/* detect format by reading the first bytes of the file.
+ * more reliable than trusting the extension.
+ */
 static ImageFormat detect_format(const char *path)
 {
-    const char *dot = strrchr(path, '.');
-    if (dot) {
-        if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0)
-            return IMG_FMT_JPEG;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { perror("fopen"); exit(1); }
+
+    uint8_t sig[2];
+    if (fread(sig, 1, 2, fp) != 2) {
+        fprintf(stderr, "cannot read file signature\n"); exit(1);
     }
+    fclose(fp);
+
+    if (sig[0] == JPEG_SIG_B0 && sig[1] == JPEG_SIG_B1)
+        return IMG_FMT_JPEG;
     return IMG_FMT_PNG;
 }
+
 
 Image image_load(const char *path)
 {
