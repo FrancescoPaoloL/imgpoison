@@ -1,6 +1,7 @@
 #include "../include/image.h"
 #include "../include/ss.h"
 #include "../include/lsb.h"
+#include "../include/analyze.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -11,8 +12,9 @@ static void usage(const char *prog) {
         "  %s --extract [--detect] <image.png|jpg>\n"
         "  %s --extract --method ss --seed <n> <image.png|jpg>\n"
         "  %s --embed --method lsb --payload <text> <in.png|jpg> <out.png|jpg>\n"
-        "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] <in.png|jpg> <out.png|jpg>\n",
-        prog, prog, prog, prog);
+        "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] <in.png|jpg> <out.png|jpg>\n"
+        "  %s --analyze [--method lsb|ss] [--seed <n>] <image.png|jpg>\n",
+        prog, prog, prog, prog, prog);
     exit(1);
 }
 
@@ -92,6 +94,29 @@ static void cmd_embed(int argc, char *argv[]) {
     image_free(&img);
 }
 
+static void cmd_analyze(int argc, char *argv[]) {
+    const char *method = "ss";
+    const char *path   = NULL;
+    uint32_t    seed   = 42;
+
+    for (int i = 0; i < argc - 1; i++) {
+        if (strcmp(argv[i], "--method") == 0) method = argv[++i];
+        if (strcmp(argv[i], "--seed")   == 0) seed   = (uint32_t)atoi(argv[++i]);
+    }
+    path = argv[argc - 1];
+    if (!path) usage("imgpoison");
+
+    Image img = image_load(path);
+    printf("Image    : %ux%u  channels=%u\n", img.width, img.height, img.channels);
+
+    if (strcmp(method, "lsb") == 0) {
+        lsb_detect(img.pixels, img.size);
+    } else {
+        ss_analyze(img.pixels, img.size, img.width, img.channels, seed);
+    }
+    image_free(&img);
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 2) usage(argv[0]);
 
@@ -99,6 +124,8 @@ int main(int argc, char *argv[]) {
         cmd_extract(argc - 2, argv + 2);
     else if (strcmp(argv[1], "--embed") == 0)
         cmd_embed(argc - 2, argv + 2);
+    else if (strcmp(argv[1], "--analyze") == 0)
+        cmd_analyze(argc - 2, argv + 2);
     else
         usage(argv[0]);
 
