@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS  = -Wall -Wextra -Wpedantic -std=c11 -O2 -g -Iinclude
 LDFLAGS = -lz -lm -ljpeg
 
-SRC		= src/main.c src/image.c src/png.c src/jpeg.c src/lsb.c src/embed_lsb.c src/embed_ss.c
+SRC		= src/main.c src/image.c src/png.c src/jpeg.c src/lsb.c src/embed_lsb.c src/embed_ss.c src/analyze.c
 TARGET  = bin/imgpoison
 
 all:
