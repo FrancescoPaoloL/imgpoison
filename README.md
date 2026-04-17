@@ -48,6 +48,15 @@ Detect LSB embedding:
 
     ./bin/imgpoison --extract --detect input.png
 
+Analyze — inspect an image for hidden payload without extracting it:
+
+    ./bin/imgpoison --analyze --method ss --seed 42 output.jpg
+    ./bin/imgpoison --analyze --method lsb input.png
+
+SS analyze requires the same seed used at embed time. It prints the correlation
+strength for each header bit and a verdict. LSB analyze runs a chi-square test
+on pixel value distribution.
+
 ## Parameters
 
 | Parameter    | Default | Notes                                        |
@@ -67,7 +76,7 @@ Detect LSB embedding:
 ## How SS works
 
 Each payload bit is hidden across two groups of pixels (block A and B).
-Block A is nudged slightly brighter, block B slightly darker (or vice versa).
+Block A is shifted slightly brighter, block B slightly darker (or vice versa).
 To extract: compare A and B — whichever is brighter encodes the bit value.
 
 JPEG adds random noise to pixels, but because the noise hits A and B equally,
@@ -109,7 +118,8 @@ Increase --strength to improve robustness at the cost of visibility.
 ## Pending
 
 - Shell script regression test (embed → extract round-trip)
-- LLM security angle documentationi
+- LLM security angle documentation
+- Fix strength estimate in --analyze (currently inflated by JPEG noise)
 
 ## References
 
@@ -119,6 +129,11 @@ Steganography, ARL-TR-1698, 1998. apps.dtic.mil/sti/citations/ADA349102
 Press, Teukolsky, Vetterling, Flannery — Numerical Recipes in C, 2nd ed., 1992.
 LCG constants (multiplier 1664525, increment 1013904223) from chapter 7.
 
+Knuth — The Art of Computer Programming, vol. 2, sec. 3.4.2.
+Fisher-Yates shuffle implementation.
+
+ITU-R BT.601 — luma coefficients reference.
+en.wikipedia.org/wiki/Luma_(video)#Rec._601_luma_versus_Rec._709_luma
 
 ## Connect with me
 <p align="left">
