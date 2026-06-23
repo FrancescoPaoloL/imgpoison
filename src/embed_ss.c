@@ -23,7 +23,7 @@
 
 /* lcg: minimal pseudorandom number generator
  *
- * Linear Congruential Generator — seeded per bit so each bit
+ * Linear Congruential Generator - seeded per bit so each bit
  * gets a independent chip. No external dependency.
  *
  * see: en.wikipedia.org/wiki/Linear_congruential_generator
@@ -37,7 +37,7 @@
  * system rand() are almost always LCGs, under the hood.
  *
  * When you add or multiply a uint32_t and the result exceeds 2^32,
- * it just wraps around — the overflow is discarded automatically.
+ * it just wraps around - the overflow is discarded automatically.
  * That's the mod m for free, no extra code needed.
  *
  * mod 2^32 is free: uint32_t overflows wrap around automatically.
@@ -60,7 +60,7 @@ static void make_chip(LCG *r, float *chip)
 }
 
 /* luminance approximation weights (ITU-R BT.601)
- * we use simple average instead — close enough for SS embedding.
+ * we use simple average instead - close enough for SS embedding.
  * see: en.wikipedia.org/wiki/Luma_(video)#Rec._601_luma_versus_Rec._709_luma */
 static float pixel_luma(const uint8_t *px, uint32_t ch) {
     float sum = 0.0f;
@@ -78,11 +78,15 @@ static void add_signal(uint8_t *px, uint32_t ch, float delta) {
 
 
 /* capacity check.
- * each payload bit needs 2 blocks of CHIP_SIZE pixels (block A and B).
- * total pixels = (header bits + payload bits) * 2 * CHIP_SIZE.
+ * each embedded bit needs 2 blocks of CHIP_SIZE pixels (block A and B).
+ * the header section = (MAGIC_BITS + HEADER_BITS) bits, each repeated
+ * HEADER_REPEAT times. the payload body = payload_len*8 bits, once each.
  * see embed_bit() for why 2 blocks per bit. */
+static size_t header_bits_total(void) {
+    return (size_t)(MAGIC_BITS + HEADER_BITS) * HEADER_REPEAT;
+}
 static size_t pixels_needed(size_t payload_len) {
-    return (HEADER_BITS + payload_len * 8) * 2 * CHIP_SIZE;
+    return (header_bits_total() + payload_len * 8) * 2 * CHIP_SIZE;
 }
 
 
@@ -154,6 +158,26 @@ static int extract_bit(const uint8_t *pixels, const size_t *perm, size_t pair_of
 }
 
 
+/* embed one logical bit redundantly across HEADER_REPEAT physical slots.
+ * *slot is the running pair index; advanced by HEADER_REPEAT.
+ * each repeat consumes a fresh chip from the LCG, exactly mirrored on extract. */
+static void embed_bit_rep(uint8_t *pixels, const size_t *perm, size_t *slot,
+                          uint32_t ch, int bit, LCG *rng, int strength) {
+    for (int r = 0; r < HEADER_REPEAT; r++)
+        embed_bit(pixels, perm, (*slot)++ * 2 * CHIP_SIZE, ch, bit, rng, strength);
+}
+
+/* extract one logical bit by majority vote over HEADER_REPEAT slots.
+ * HEADER_REPEAT is odd so the vote can never tie. */
+static int extract_bit_rep(const uint8_t *pixels, const size_t *perm, size_t *slot,
+                           uint32_t ch, LCG *rng) {
+    int ones = 0;
+    for (int r = 0; r < HEADER_REPEAT; r++)
+        ones += extract_bit(pixels, perm, (*slot)++ * 2 * CHIP_SIZE, ch, rng);
+    return (ones * 2 > HEADER_REPEAT) ? 1 : 0;
+}
+
+
 void ss_embed(uint8_t *pixels, size_t px_size,
               uint32_t width, uint32_t channels,
               const uint8_t *payload, size_t payload_len,
@@ -177,11 +201,14 @@ void ss_embed(uint8_t *pixels, size_t px_size,
      *      Image Steganography", ARL-TR-1698, 1998, sec 4.1
      *      apps.dtic.mil/sti/citations/ADA349102 */
     size_t n_pixels = total_pixels(px_size, channels);
-    size_t n_bits   = HEADER_BITS + payload_len * 8;
-    size_t px_needed = n_bits * 2 * CHIP_SIZE;
+    size_t px_needed = pixels_needed(payload_len);
 
     if (px_needed > n_pixels) {
-        fprintf(stderr, "payload too large for image\n"); exit(1);
+        fprintf(stderr,
+            "payload too large for image: need %zu pixels, have %zu "
+            "(CHIP_SIZE=%d, try a smaller payload or larger image)\n",
+            px_needed, n_pixels, CHIP_SIZE);
+        exit(1);
     }
 
     /* perm[i] = scattered pixel index for position i */
@@ -197,16 +224,23 @@ void ss_embed(uint8_t *pixels, size_t px_size,
 
     int str = (int)strength;
 
-    /* embed 32-bit length header first so extract knows how many bits to read */
-    for (int i = 0; i < HEADER_BITS; i++)
-        embed_bit(pixels, perm, (size_t)i * 2 * CHIP_SIZE, channels,
-                  (payload_len >> (31 - i)) & 1, &rng, str);
+    /* running slot index; embed and extract advance it identically */
+    size_t slot = 0;
 
-    /* embed payload MSB first, one bit at a time */
+    /* 1) magic marker (redundant) so extract can reject noise */
+    for (int i = 0; i < MAGIC_BITS; i++)
+        embed_bit_rep(pixels, perm, &slot, channels,
+                      (SS_MAGIC >> (MAGIC_BITS - 1 - i)) & 1, &rng, str);
+
+    /* 2) 32-bit length header (redundant) */
+    for (int i = 0; i < HEADER_BITS; i++)
+        embed_bit_rep(pixels, perm, &slot, channels,
+                      (payload_len >> (31 - i)) & 1, &rng, str);
+
+    /* 3) payload body, MSB first, one slot per bit. */
     for (size_t i = 0; i < payload_len; i++)
         for (int b = 0; b < 8; b++)
-            embed_bit(pixels, perm,
-                      (size_t)(HEADER_BITS + i*8 + b) * 2 * CHIP_SIZE,
+            embed_bit(pixels, perm, slot++ * 2 * CHIP_SIZE,
                       channels, (payload[i] >> (7 - b)) & 1, &rng, str);
 
     free(perm);
@@ -229,7 +263,7 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
 
     /* rebuild the same shuffled pixel permutation used during embed.
      * same seed = same shuffle = same pixel positions.
-     * without the seed the permutation is unknown — extraction fails.
+     * without the seed the permutation is unknown - extraction fails.
      * ref: Marvel, Boncelet, Retter - "Methodology of Spread-Spectrum
      *      Image Steganography", ARL-TR-1698, 1998, sec 4.1
      *      apps.dtic.mil/sti/citations/ADA349102 */
@@ -244,29 +278,45 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
     LCG rng;
     lcg_seed(&rng, seed);
 
-    /* read 32-bit length header — must use same seed so LCG state matches embed */
-    uint32_t payload_len = 0;
-    for (int i = 0; i < HEADER_BITS; i++)
-        payload_len = (payload_len << 1) |
-                      extract_bit(pixels, perm, (size_t)i * 2 * CHIP_SIZE,
-                                  channels, &rng);
+    size_t slot = 0;
 
-    if (payload_len == 0 || payload_len > MAX_PAYLOAD) {
-        fprintf(stderr, "no valid SS payload found (got %u)\n", payload_len);
+    /* 1) read magic and verify. mismatch = noise (wrong seed, no payload,
+     *    or past the robustness limit), not a usable length. */
+    uint32_t magic = 0;
+    for (int i = 0; i < MAGIC_BITS; i++)
+        magic = (magic << 1) | extract_bit_rep(pixels, perm, &slot, channels, &rng);
+
+    if (magic != SS_MAGIC) {
+        fprintf(stderr,
+            "no valid SS payload found: magic mismatch "
+            "(got 0x%04X, want 0x%04X) - wrong seed or image past "
+            "robustness limit\n", magic, SS_MAGIC);
         free(perm);
         exit(1);
     }
 
-    /* extract payload MSB first, one bit at a time */
+    /* 2) read redundant 32-bit length header. */
+    uint32_t payload_len = 0;
+    for (int i = 0; i < HEADER_BITS; i++)
+        payload_len = (payload_len << 1) |
+                      extract_bit_rep(pixels, perm, &slot, channels, &rng);
+
+    if (payload_len == 0 || payload_len > MAX_PAYLOAD) {
+        fprintf(stderr, "no valid SS payload found (bad length %u)\n", payload_len);
+        free(perm);
+        exit(1);
+    }
+
+    /* 3) extract payload body, MSB first, one slot per bit. */
     uint8_t *payload = calloc(payload_len + 1, 1);  /* +1 for null terminator */
     for (uint32_t i = 0; i < payload_len; i++)
         for (int b = 0; b < 8; b++)
             payload[i] = (payload[i] << 1) |
-                         extract_bit(pixels, perm,
-                                     (size_t)(HEADER_BITS + i*8 + b) * 2 * CHIP_SIZE,
+                         extract_bit(pixels, perm, slot++ * 2 * CHIP_SIZE,
                                      channels, &rng);
 
     free(perm);
     *out_len = payload_len;
     return payload;
 }
+

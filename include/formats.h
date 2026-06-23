@@ -6,18 +6,24 @@
 #define MAX_PAYLOAD_BYTES 65535
 
 
-#define CHIP_SIZE      256    /* pixels per block                        */
+#define CHIP_SIZE      512    /* pixels per block (was 256, for q75)     */
 #define HEADER_BITS     32    /* 32-bit payload length header            */
 #define MAX_PAYLOAD  65535
 
+/* magic marker + redundant header: magic lets extract reject noise instead
+ * of trusting a garbage length; each header bit is repeated and majority-voted. */
+#define SS_MAGIC        0xCAFE
+#define MAGIC_BITS      16
+#define HEADER_REPEAT    5    /* odd, so majority vote never ties        */
 
-/* PNG signature — see libpng.org/pub/png/spec/1.2/PNG-Structure.html */
+
+/* PNG signature - see libpng.org/pub/png/spec/1.2/PNG-Structure.html */
 #define PNG_SIG_LEN         8
 #define PNG_SIG_BYTES       { 0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A }
 
 
 /* file magic bytes for format detection.
- * read from the first bytes of the file — more reliable than extension.
+ * read from the first bytes of the file - more reliable than extension.
  * ref: en.wikipedia.org/wiki/List_of_file_signatures */
 #define JPEG_SIG_B0  0xFF
 #define JPEG_SIG_B1  0xD8  /* JPEG always starts with FF D8 */
@@ -31,7 +37,7 @@
 #define LCG_TOP_BIT     31
 
 /* luminance approximation weights (ITU-R BT.601)
- * we use simple average instead — close enough for SS embedding.
+ * we use simple average instead - close enough for SS embedding.
  * see: en.wikipedia.org/wiki/Luma_(video)#Rec._601_luma_versus_Rec._709_luma */
 #define PIXEL_MAX  255
 #define PIXEL_MIN  0
