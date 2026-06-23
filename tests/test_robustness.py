@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# test_robustness.py — test SS payload survival through image transformations
+# test_robustness.py - test SS payload survival through image transformations
 # usage: python tests/test_robustness.py
 #
 # runs the tool through a series of transformations and checks
@@ -15,9 +15,9 @@ ORIGINAL    = "img/original.png"
 PAYLOAD     = "This is a poisoned prompt"
 SEED        = "42"
 STRENGTH    = "10"
-STEGO_BASE  = "/tmp/stego_robustness"
+STEGO_BASE  = "img/stego_robustness"
 
-# please note: expected limits with STRENGTH=10, CHIP_SIZE=256
+# please note: expected limits with STRENGTH=10, CHIP_SIZE=512
 
 def embed(output):
     """embed payload into original image and save to output."""
@@ -56,47 +56,69 @@ def check(label, path):
         print(f"       {e.stderr.strip()}")
         return False
 
-def main():
-    print("imgpoison robustness tests")
-    print("==========================")
-
-    # start from a fresh stego JPEG
-    base = STEGO_BASE + ".jpg"
-    embed(base)
-
+def run_transforms(base):
+    """apply the 5 standard transforms to base, return list of pass/fail."""
     results = []
 
-    # test 1 — baseline: no transformation
+    # test 1 - baseline: no transformation
     results.append(check("baseline (no transformation)", base))
 
-    # test 2 — recompress at quality 90
+    # test 2 - recompress at quality 90
     path = STEGO_BASE + "_q90.jpg"
     Image.open(base).save(path, quality=90)
     results.append(check("recompress q90", path))
 
-    # test 3 — recompress at quality 85
+    # test 3 - recompress at quality 85
     path = STEGO_BASE + "_q85.jpg"
     Image.open(base).save(path, quality=85)
     results.append(check("recompress q85", path))
 
-    # test 4 — recompress at quality 75
+    # test 4 - recompress at quality 75
     path = STEGO_BASE + "_q75.jpg"
     Image.open(base).save(path, quality=75)
     results.append(check("recompress q75", path))
 
-    # test 5 — rotate 1 degree (introduces interpolation noise)
+    # test 5 - rotate 1 degree (geometric desync, not just quantization noise)
     path = STEGO_BASE + "_rot1.jpg"
     Image.open(base).rotate(1).save(path, quality=95)
     results.append(check("rotate 1 degree + save q95", path))
 
+    return results
+
+def main():
+    print("imgpoison robustness tests")
+    print("==========================")
+
+    # two paths, because "does the payload survive" has two honest answers.
+    #
+    # path A - PIPELINE: embed straight to JPEG (as the README documents the
+    #   tool's real output), then recompress. every case is a DOUBLE
+    #   compression (q95 from the embed + the test's q). this is what a real
+    #   user actually subjects the image to.
+    #
+    # path B - ALGORITHM: embed to lossless PNG, then a SINGLE recompression.
+    #   isolates the spread-spectrum scheme's own robustness from the extra
+    #   compression the JPEG output format adds.
+
+    print("\n[A] pipeline (embed->JPEG q95, the README flow):")
+    base_jpg = STEGO_BASE + ".jpg"
+    embed(base_jpg)
+    res_a = run_transforms(base_jpg)
+
+    print("\n[B] algorithm (embed->PNG lossless, single recompress):")
+    base_png = STEGO_BASE + ".png"
+    embed(base_png)
+    res_b = run_transforms(base_png)
+
     print()
-    passed = sum(results)
-    total  = len(results)
-    print(f"{passed}/{total} tests passed")
+    pa, pb = sum(res_a), sum(res_b)
+    print(f"[A] pipeline : {pa}/{len(res_a)} passed")
+    print(f"[B] algorithm: {pb}/{len(res_b)} passed")
     print()
-    print("note: q85 and below are known limits at STRENGTH=10.")
-    print("      increase --strength to improve robustness at the cost of visibility.")
-    sys.exit(0 if passed == total else 1)
+    print("note: rotate is geometric desync (the seeded pixel permutation")
+    print("      points to pixels that moved under interpolation), not a")
+    print("      quantization problem - out of scope, fails with magic mismatch.")
+    sys.exit(0 if (pa + pb) == (len(res_a) + len(res_b)) else 1)
 
 if __name__ == "__main__":
     main()
