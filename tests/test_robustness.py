@@ -15,6 +15,7 @@ ORIGINAL    = "img/original.png"
 PAYLOAD     = "This is a poisoned prompt"
 SEED        = "42"
 STRENGTH    = "10"
+AUTO_GAMMA  = "1.0"
 STEGO_BASE  = "img/stego_robustness"
 
 # please note: expected limits with STRENGTH=10, CHIP_SIZE=512
@@ -24,6 +25,16 @@ def embed(output):
     subprocess.run([
         TOOL, "--embed", "--method", "ss",
         "--seed", SEED, "--strength", STRENGTH,
+        "--payload", PAYLOAD,
+        ORIGINAL, output
+    ], check=True, capture_output=True)
+
+def embed_masked(output):
+    """embed payload using the auto-mask texture concentration, save to output."""
+    subprocess.run([
+        TOOL, "--embed", "--method", "ss",
+        "--seed", SEED, "--strength", STRENGTH,
+        "--auto-mask", AUTO_GAMMA,
         "--payload", PAYLOAD,
         ORIGINAL, output
     ], check=True, capture_output=True)
@@ -89,7 +100,8 @@ def main():
     print("imgpoison robustness tests")
     print("==========================")
 
-    # two paths, because "does the payload survive" has two honest answers.
+    # three paths, because "does the payload survive" has two honest answers
+    # for the embedding itself, plus a third for the new placement strategy.
     #
     # path A - PIPELINE: embed straight to JPEG (as the README documents the
     #   tool's real output), then recompress. every case is a DOUBLE
@@ -99,6 +111,12 @@ def main():
     # path B - ALGORITHM: embed to lossless PNG, then a SINGLE recompression.
     #   isolates the spread-spectrum scheme's own robustness from the extra
     #   compression the JPEG output format adds.
+    #
+    # path C - AUTO-MASK: same as B, but strength is redistributed by the
+    #   structure tensor texture mask (gamma=1) instead of uniform. checks
+    #   that concentrating the payload in high-texture regions doesn't cost
+    #   robustness, not how much it helps perceptually - that's a separate
+    #   question, covered by the quality/calibration tooling, not this file.
 
     print("\n[A] pipeline (embed->JPEG q95, the README flow):")
     base_jpg = STEGO_BASE + ".jpg"
@@ -110,15 +128,23 @@ def main():
     embed(base_png)
     res_b = run_transforms(base_png)
 
+    print("\n[C] auto-mask (embed->PNG lossless, gamma=1.0, single recompress):")
+    base_masked = STEGO_BASE + "_masked.png"
+    embed_masked(base_masked)
+    res_c = run_transforms(base_masked)
+
     print()
-    pa, pb = sum(res_a), sum(res_b)
-    print(f"[A] pipeline : {pa}/{len(res_a)} passed")
-    print(f"[B] algorithm: {pb}/{len(res_b)} passed")
+    pa, pb, pc = sum(res_a), sum(res_b), sum(res_c)
+    print(f"[A] pipeline  : {pa}/{len(res_a)} passed")
+    print(f"[B] algorithm : {pb}/{len(res_b)} passed")
+    print(f"[C] auto-mask : {pc}/{len(res_c)} passed")
     print()
     print("note: rotate is geometric desync (the seeded pixel permutation")
     print("      points to pixels that moved under interpolation), not a")
     print("      quantization problem - out of scope, fails with magic mismatch.")
-    sys.exit(0 if (pa + pb) == (len(res_a) + len(res_b)) else 1)
+    total_pass = pa + pb + pc
+    total_n    = len(res_a) + len(res_b) + len(res_c)
+    sys.exit(0 if total_pass == total_n else 1)
 
 if __name__ == "__main__":
     main()
