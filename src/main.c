@@ -2,6 +2,7 @@
 #include "../include/ss.h"
 #include "../include/lsb.h"
 #include "../include/analyze.h"
+#include "../include/texture.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,10 +13,35 @@ static void usage(const char *prog) {
         "  %s --extract [--detect] <image.png|jpg>\n"
         "  %s --extract --method ss --seed <n> <image.png|jpg>\n"
         "  %s --embed --method lsb --payload <text> <in.png|jpg> <out.png|jpg>\n"
-        "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] <in.png|jpg> <out.png|jpg>\n"
+        "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] [--mask <file>] [--auto-mask <gamma>] <in.png|jpg> <out.png|jpg>\n"
         "  %s --analyze [--method lsb|ss] [--seed <n>] <image.png|jpg>\n",
         prog, prog, prog, prog, prog);
     exit(1);
+}
+
+/* load a per-pixel mask from a flat binary file of floats, one entry
+ * per pixel in raster order (width*height entries, not width*height*
+ * channels - mask applies once per pixel across all its channels,
+ * see embed_bit() in embed_ss.c). returns NULL on any error, with
+ * a reason on stderr. */
+static float *mask_load(const char *path, size_t n_pixels) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "cannot open mask file: %s\n", path);
+        return NULL;
+    }
+
+    float *mask = malloc(n_pixels * sizeof(float));
+    size_t read = fread(mask, sizeof(float), n_pixels, f);
+    fclose(f);
+
+    if (read != n_pixels) {
+        fprintf(stderr, "mask file size mismatch: expected %zu floats, got %zu\n",
+                n_pixels, read);
+        free(mask);
+        return NULL;
+    }
+    return mask;
 }
 
 static void cmd_extract(int argc, char *argv[]) {
@@ -58,37 +84,63 @@ static void cmd_extract(int argc, char *argv[]) {
 }
 
 static void cmd_embed(int argc, char *argv[]) {
-    const char *method   = "lsb";
-    const char *payload  = NULL;
-    const char *input    = NULL;
-    const char *output   = NULL;
-    uint32_t    seed     = 42;
-    uint32_t    strength = 10;  // how hard the signal is pushed into the pixels
-                                // higher = more robust after JPEG, more visible.
-                                // 10 survives JPEG at quality 95 with no bit errors
+    const char *method     = "lsb";
+    const char *payload    = NULL;
+    const char *input      = NULL;
+    const char *output     = NULL;
+    const char *mask_path  = NULL;
+    int         auto_mask  = 0;
+    float       auto_gamma = 1.0f;
+    uint32_t    seed       = 42;
+    uint32_t    strength   = 10;  // how hard the signal is pushed into the pixels
+                                  // higher = more robust after JPEG, more visible.
+                                  // 10 survives JPEG at quality 95 with no bit errors
 
     for (int i = 0; i < argc - 2; i++) {
-        if (strcmp(argv[i], "--method")   == 0) method   = argv[++i];
-        if (strcmp(argv[i], "--payload")  == 0) payload  = argv[++i];
-        if (strcmp(argv[i], "--seed")     == 0) seed     = (uint32_t)atoi(argv[++i]);
-        if (strcmp(argv[i], "--strength") == 0) strength = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--method")     == 0) method     = argv[++i];
+        if (strcmp(argv[i], "--payload")    == 0) payload    = argv[++i];
+        if (strcmp(argv[i], "--seed")       == 0) seed       = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--strength")   == 0) strength   = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--mask")       == 0) mask_path  = argv[++i];
+        if (strcmp(argv[i], "--auto-mask")  == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
     }
     input  = argv[argc - 2];
     output = argv[argc - 1];
 
     if (!payload || !input || !output) usage("imgpoison");
+    if (mask_path && auto_mask) {
+        fprintf(stderr, "--mask and --auto-mask are mutually exclusive\n");
+        exit(1);
+    }
 
     Image img = image_load(input);
     printf("Image    : %ux%u  channels=%u\n", img.width, img.height, img.channels);
 
+    float *mask = NULL;
+    if (mask_path) {
+        mask = mask_load(mask_path, (size_t)img.width * img.height);
+        if (!mask) exit(1);
+    } else if (auto_mask) {
+        /* structure tensor texture mask, computed straight from this
+         * image. no python, no external file. see texture.c for the
+         * math and the three bugs it carries fixes for. */
+        float *gray = texture_luma(img.pixels, img.width, img.height, img.channels);
+        float *tex  = texture_compute(gray, img.width, img.height);
+        mask = texture_gamma_mask(tex, img.width, img.height, auto_gamma);
+        free(gray);
+        free(tex);
+        printf("Mask     : auto, gamma=%.2f\n", auto_gamma);
+    }
+
     if (strcmp(method, "ss") == 0) {
         ss_embed(img.pixels, img.size, img.width, img.channels,
-                 (const uint8_t *)payload, strlen(payload), seed, strength);
+                 (const uint8_t *)payload, strlen(payload), seed, strength, mask);
     } else {
         lsb_embed(img.pixels, img.size,
                   (const uint8_t *)payload, strlen(payload));
     }
 
+    free(mask);
     image_save(&img, output);
     printf("Saved    : %s\n", output);
     image_free(&img);

@@ -119,19 +119,28 @@ static void shuffle_indices(size_t *idx, size_t n, uint32_t seed)
 
 /* embed one bit: nudge block A and B in opposite directions.
  * bit=1 -> signal=+1, bit=0 -> signal=-1.
- * using two blocks instead of one cancels out background brightness. */
+ * using two blocks instead of one cancels out background brightness.
+ * mask, if not NULL, scales strength per pixel: block A and B usually
+ * land on different pixels, so each chip sample looks up its own
+ * mask value instead of sharing one for the whole bit. */
 static void embed_bit(uint8_t *pixels, const size_t *perm, size_t pair_offset,
-                      uint32_t ch, int bit, LCG *rng, int strength) {
+                      uint32_t ch, int bit, LCG *rng, int strength,
+                      const float *mask) {
     float  signal  = bit ? 1.0f : -1.0f;
     float  chip[CHIP_SIZE];
 
     make_chip(rng, chip);
 
     for (int i = 0; i < CHIP_SIZE; i++) {
-        add_signal(pixels + perm[pair_offset + i] * ch, ch,
-                   signal * chip[i] * strength);
-        add_signal(pixels + perm[pair_offset + CHIP_SIZE + i] * ch, ch,
-                  -signal * chip[i] * strength);
+        size_t idx_a = perm[pair_offset + i];
+        size_t idx_b = perm[pair_offset + CHIP_SIZE + i];
+        float  m_a   = mask ? mask[idx_a] : 1.0f;
+        float  m_b   = mask ? mask[idx_b] : 1.0f;
+
+        add_signal(pixels + idx_a * ch, ch,
+                   signal * chip[i] * strength * m_a);
+        add_signal(pixels + idx_b * ch, ch,
+                  -signal * chip[i] * strength * m_b);
     }
 }
 
@@ -162,9 +171,10 @@ static int extract_bit(const uint8_t *pixels, const size_t *perm, size_t pair_of
  * *slot is the running pair index; advanced by HEADER_REPEAT.
  * each repeat consumes a fresh chip from the LCG, exactly mirrored on extract. */
 static void embed_bit_rep(uint8_t *pixels, const size_t *perm, size_t *slot,
-                          uint32_t ch, int bit, LCG *rng, int strength) {
+                          uint32_t ch, int bit, LCG *rng, int strength,
+                          const float *mask) {
     for (int r = 0; r < HEADER_REPEAT; r++)
-        embed_bit(pixels, perm, (*slot)++ * 2 * CHIP_SIZE, ch, bit, rng, strength);
+        embed_bit(pixels, perm, (*slot)++ * 2 * CHIP_SIZE, ch, bit, rng, strength, mask);
 }
 
 /* extract one logical bit by majority vote over HEADER_REPEAT slots.
@@ -181,7 +191,8 @@ static int extract_bit_rep(const uint8_t *pixels, const size_t *perm, size_t *sl
 void ss_embed(uint8_t *pixels, size_t px_size,
               uint32_t width, uint32_t channels,
               const uint8_t *payload, size_t payload_len,
-              uint32_t seed, uint32_t strength){
+              uint32_t seed, uint32_t strength,
+              const float *mask){
     (void)width;
 
     if (payload_len == 0 || payload_len > MAX_PAYLOAD) {
@@ -230,18 +241,18 @@ void ss_embed(uint8_t *pixels, size_t px_size,
     /* 1) magic marker (redundant) so extract can reject noise */
     for (int i = 0; i < MAGIC_BITS; i++)
         embed_bit_rep(pixels, perm, &slot, channels,
-                      (SS_MAGIC >> (MAGIC_BITS - 1 - i)) & 1, &rng, str);
+                      (SS_MAGIC >> (MAGIC_BITS - 1 - i)) & 1, &rng, str, mask);
 
     /* 2) 32-bit length header (redundant) */
     for (int i = 0; i < HEADER_BITS; i++)
         embed_bit_rep(pixels, perm, &slot, channels,
-                      (payload_len >> (31 - i)) & 1, &rng, str);
+                      (payload_len >> (31 - i)) & 1, &rng, str, mask);
 
     /* 3) payload body, MSB first, one slot per bit. */
     for (size_t i = 0; i < payload_len; i++)
         for (int b = 0; b < 8; b++)
             embed_bit(pixels, perm, slot++ * 2 * CHIP_SIZE,
-                      channels, (payload[i] >> (7 - b)) & 1, &rng, str);
+                      channels, (payload[i] >> (7 - b)) & 1, &rng, str, mask);
 
     free(perm);
 
@@ -319,4 +330,3 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
     *out_len = payload_len;
     return payload;
 }
-
