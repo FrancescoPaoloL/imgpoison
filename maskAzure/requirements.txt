@@ -1,0 +1,14 @@
+# torch is installed separately in the Dockerfile from the CPU-only index.
+#
+# Versions below are loose-pinned from what I know, not verified against a
+# live index (no network in this sandbox). After the first successful build,
+# run `pip freeze > requirements.lock.txt` inside the container and switch
+# the Dockerfile to install from that instead -- same pattern already used
+# for the other Docker projects.
+numpy>=2.0,<3
+scipy>=1.13,<2
+scikit-image>=0.24,<0.27
+matplotlib>=3.9,<4
+Pillow>=10.0,<13
+lpips==0.1.4
+
