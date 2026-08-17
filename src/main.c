@@ -14,8 +14,9 @@ static void usage(const char *prog) {
         "  %s --extract --method ss --seed <n> [--mask <file>] [--auto-mask <gamma>] <image.png|jpg>\n"
         "  %s --embed --method lsb --payload <text> <in.png|jpg> <out.png|jpg>\n"
         "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] [--mask <file>] [--auto-mask <gamma>] <in.png|jpg> <out.png|jpg>\n"
-        "  %s --analyze [--method lsb|ss] [--seed <n>] <image.png|jpg>\n",
-        prog, prog, prog, prog, prog);
+        "  %s --analyze [--method lsb|ss] [--seed <n>] <image.png|jpg>\n"
+        "  %s --bitacc --payload <text> --seed <n> [--mask <file>] [--auto-mask <gamma>] <image.png|jpg>\n",
+        prog, prog, prog, prog, prog, prog);
     exit(1);
 }
 
@@ -174,6 +175,51 @@ static void cmd_embed(int argc, char *argv[]) {
     image_free(&img);
 }
 
+static void cmd_bitacc(int argc, char *argv[]) {
+    const char *payload   = NULL;
+    const char *path      = NULL;
+    const char *mask_path = NULL;
+    int         auto_mask = 0;
+    float       auto_gamma = 1.0f;
+    uint32_t    seed      = 42;
+
+    for (int i = 0; i < argc - 1; i++) {
+        if (strcmp(argv[i], "--payload")   == 0) payload    = argv[++i];
+        if (strcmp(argv[i], "--seed")      == 0) seed       = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--mask")      == 0) mask_path  = argv[++i];
+        if (strcmp(argv[i], "--auto-mask") == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
+    }
+    path = argv[argc - 1];
+    if (!payload || !path) usage("imgpoison");
+    if (mask_path && auto_mask) {
+        fprintf(stderr, "--mask and --auto-mask are mutually exclusive\n");
+        exit(1);
+    }
+
+    Image img = image_load(path);
+    printf("Image    : %ux%u  channels=%u\n", img.width, img.height, img.channels);
+
+    float *mask = NULL;
+    float *gray_buf = NULL, *tex_buf = NULL;
+    if (mask_path) {
+        mask = mask_load(mask_path, (size_t)img.width * img.height);
+        if (!mask) exit(1);
+    } else if (auto_mask) {
+        gray_buf = texture_luma(img.pixels, img.width, img.height, img.channels);
+        tex_buf  = texture_compute(gray_buf, img.width, img.height);
+        mask     = texture_gamma_mask(tex_buf, img.width, img.height, auto_gamma);
+    }
+
+    float acc = ss_bit_accuracy(img.pixels, img.size, img.width, img.channels,
+                                (const uint8_t *)payload, strlen(payload), seed, mask);
+    printf("Bit acc  : %.4f (%.1f%%)\n", acc, 100.0 * acc);
+
+    free(mask);
+    free(gray_buf);
+    free(tex_buf);
+    image_free(&img);
+}
+
 static void cmd_analyze(int argc, char *argv[]) {
     const char *method = "ss";
     const char *path   = NULL;
@@ -206,6 +252,8 @@ int main(int argc, char *argv[]) {
         cmd_embed(argc - 2, argv + 2);
     else if (strcmp(argv[1], "--analyze") == 0)
         cmd_analyze(argc - 2, argv + 2);
+    else if (strcmp(argv[1], "--bitacc") == 0)
+        cmd_bitacc(argc - 2, argv + 2);
     else
         usage(argv[0]);
 

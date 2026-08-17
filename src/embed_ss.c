@@ -167,13 +167,15 @@ static void embed_bit(uint8_t *pixels, const size_t *perm, size_t pair_offset,
  *
  * weighted by mask when given: embed_bit scales the signal at each
  * pixel by mask[i], so an unweighted correlator is not the matched
- * filter for a non-uniform mask. signal ~ sum(m_i), noise ~ sigma *
- * sqrt(sum(m_i)), so SNR ~ E[M] / sqrt(E[M]) with equal weights - and
- * since the mask is RMS-normalized (E[M^2]=1), Jensen's inequality
- * gives E[M] <= 1 with equality only at gamma=0. every other gamma
- * would lose SNR by construction, not because masking is worse.
- * weighting the correlation by (m_a + m_b) matches the filter to the
- * actual per-sample signal amplitude and removes that bias. */
+ * filter for a non-uniform mask. with equal weights, signal ~ N*E[M]
+ * (N=CHIP_SIZE) but noise ~ sigma*sqrt(N), independent of the mask -
+ * the correlator's noise term never sees mask at all when unweighted.
+ * so SNR ~ E[M]*sqrt(N)/sigma, and since the mask is RMS-normalized
+ * (E[M^2]=1), Jensen's inequality gives E[M] <= 1 with equality only
+ * at gamma=0. every other gamma would lose SNR by construction, not
+ * because masking is worse. weighting the correlation by (m_a + m_b)
+ * matches the filter to the actual per-sample signal amplitude and
+ * removes that bias. */
 static int extract_bit(const uint8_t *pixels, const size_t *perm, size_t pair_offset,
                        uint32_t ch, LCG *rng, const float *mask) {
     float  chip[CHIP_SIZE];
@@ -365,5 +367,49 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
     free(perm);
     *out_len = payload_len;
     return payload;
+}
+
+
+float ss_bit_accuracy(const uint8_t *pixels, size_t px_size,
+                      uint32_t width, uint32_t channels,
+                      const uint8_t *known_payload, size_t payload_len,
+                      uint32_t seed, const float *mask) {
+    (void)width;
+
+    size_t n_pixels = total_pixels(px_size, channels);
+    size_t *perm = malloc(n_pixels * sizeof(size_t));
+    for (size_t i = 0; i < n_pixels; i++)
+        perm[i] = i;
+    shuffle_indices(perm, n_pixels, seed);
+
+    LCG rng;
+    lcg_seed(&rng, seed);
+
+    size_t slot = 0;
+
+    /* skip magic + header without reading them back - just advance the
+     * chip stream and slot counter the same amount ss_embed did, so the
+     * payload section lines up. header_bits_total() already counts the
+     * HEADER_REPEAT multiplication. */
+    for (size_t i = 0; i < header_bits_total(); i++) {
+        float chip[CHIP_SIZE];
+        make_chip(&rng, chip);
+        slot++;
+    }
+
+    size_t correct = 0, total = 0;
+    for (size_t i = 0; i < payload_len; i++) {
+        for (int b = 0; b < 8; b++) {
+            int expected = (known_payload[i] >> (7 - b)) & 1;
+            for (int r = 0; r < PAYLOAD_REPEAT; r++) {
+                int got = extract_bit(pixels, perm, slot++ * 2 * CHIP_SIZE, channels, &rng, mask);
+                if (got == expected) correct++;
+                total++;
+            }
+        }
+    }
+
+    free(perm);
+    return total > 0 ? (float)correct / (float)total : 0.0f;
 }
 
