@@ -11,7 +11,7 @@ static void usage(const char *prog) {
     fprintf(stderr,
         "usage:\n"
         "  %s --extract [--detect] <image.png|jpg>\n"
-        "  %s --extract --method ss --seed <n> <image.png|jpg>\n"
+        "  %s --extract --method ss --seed <n> [--mask <file>] [--auto-mask <gamma>] <image.png|jpg>\n"
         "  %s --embed --method lsb --payload <text> <in.png|jpg> <out.png|jpg>\n"
         "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] [--mask <file>] [--auto-mask <gamma>] <in.png|jpg> <out.png|jpg>\n"
         "  %s --analyze [--method lsb|ss] [--seed <n>] <image.png|jpg>\n",
@@ -45,30 +45,58 @@ static float *mask_load(const char *path, size_t n_pixels) {
 }
 
 static void cmd_extract(int argc, char *argv[]) {
-    int         detect = 0;
-    const char *method = "lsb";
-    const char *path   = NULL;
-    uint32_t    seed   = 42;
+    int         detect    = 0;
+    const char *method    = "lsb";
+    const char *path      = NULL;
+    const char *mask_path = NULL;
+    int         auto_mask = 0;
+    float       auto_gamma = 1.0f;
+    uint32_t    seed      = 42;
 
     for (int i = 0; i < argc - 1; i++) {
-        if (strcmp(argv[i], "--detect") == 0) detect = 1;
-        if (strcmp(argv[i], "--method") == 0) method = argv[++i];
-        if (strcmp(argv[i], "--seed")   == 0) seed   = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--detect")    == 0) detect     = 1;
+        if (strcmp(argv[i], "--method")    == 0) method     = argv[++i];
+        if (strcmp(argv[i], "--seed")      == 0) seed       = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--mask")      == 0) mask_path  = argv[++i];
+        if (strcmp(argv[i], "--auto-mask") == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
     }
     path = argv[argc - 1];
     if (!path) usage("imgpoison");
+    if (mask_path && auto_mask) {
+        fprintf(stderr, "--mask and --auto-mask are mutually exclusive\n");
+        exit(1);
+    }
 
     Image img = image_load(path);
     printf("Image    : %ux%u  channels=%u\n", img.width, img.height, img.channels);
 
     if (strcmp(method, "ss") == 0) {
+        /* the mask is public, recomputed from the received image itself,
+         * not something transmitted alongside the payload. embed_bit
+         * scales the signal by mask, so extract_bit must weight the
+         * correlation by the same mask or it is not the matched filter -
+         * see extract_bit's comment in embed_ss.c. */
+        float *mask = NULL;
+        float *gray_buf = NULL, *tex_buf = NULL;
+        if (mask_path) {
+            mask = mask_load(mask_path, (size_t)img.width * img.height);
+            if (!mask) exit(1);
+        } else if (auto_mask) {
+            gray_buf = texture_luma(img.pixels, img.width, img.height, img.channels);
+            tex_buf  = texture_compute(gray_buf, img.width, img.height);
+            mask     = texture_gamma_mask(tex_buf, img.width, img.height, auto_gamma);
+        }
+
         size_t   payload_len;
         uint8_t *payload = ss_extract(img.pixels, img.size,
                                       img.width, img.channels,
-                                      seed, &payload_len);
+                                      seed, &payload_len, mask);
         printf("Length   : %zu bytes\n", payload_len);
         printf("Payload  : %s\n", payload);
         free(payload);
+        free(mask);
+        free(gray_buf);
+        free(tex_buf);
     } else {
         if (detect) {
             lsb_detect(img.pixels, img.size);

@@ -12,7 +12,12 @@ from PIL import Image
 # paths
 TOOL        = "./bin/imgpoison"
 ORIGINAL    = "img/original.png"
-PAYLOAD     = "This is a poisoned prompt"
+# PAYLOAD is short on purpose, not arbitrary: with PAYLOAD_REPEAT=3 added
+# to protect against marginal bit flips (see embed_ss.c), a 1083x546 image
+# only has capacity for ~14 bytes of payload. the original 26-byte string
+# doesn't fit anymore - this is the actual capacity cost of the fix, not
+# a bug. bigger image or smaller CHIP_SIZE would raise the ceiling instead.
+PAYLOAD     = "poison test!"
 SEED        = "42"
 STRENGTH    = "10"
 AUTO_GAMMA  = "1.0"
@@ -39,22 +44,31 @@ def embed_masked(output):
         ORIGINAL, output
     ], check=True, capture_output=True)
 
-def extract(path):
-    """extract payload from image, return the payload string."""
-    result = subprocess.run([
-        TOOL, "--extract", "--method", "ss",
-        "--seed", SEED, path
-    ], check=True, capture_output=True, text=True)
-    # parse "Payload  : <text>" from stdout
-    for line in result.stdout.splitlines():
+def extract(path, masked=False):
+    """extract payload from image, return the payload string.
+
+    masked must match how the image was embedded: extraction recomputes
+    the texture mask from the received image and weights the correlator
+    by it, so the wrong flag here is the same kind of mismatch as the
+    wrong seed."""
+    cmd = [TOOL, "--extract", "--method", "ss", "--seed", SEED]
+    if masked:
+        cmd += ["--auto-mask", AUTO_GAMMA]
+    cmd.append(path)
+    result = subprocess.run(cmd, check=True, capture_output=True)
+    # decode leniently, not with text=True: a corrupted extraction (past
+    # the robustness limit) can print bytes that are not valid utf-8, and
+    # that is a FAIL to report, not a reason for the whole run to crash.
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    for line in stdout.splitlines():
         if line.startswith("Payload"):
             return line.split(":", 1)[1].strip()
     return None
 
-def check(label, path):
+def check(label, path, masked=False):
     """extract and verify payload, print result."""
     try:
-        got = extract(path)
+        got = extract(path, masked=masked)
         ok  = got == PAYLOAD
         status = "PASS" if ok else "FAIL"
         print(f"  {status}  {label}")
@@ -64,35 +78,36 @@ def check(label, path):
         return ok
     except subprocess.CalledProcessError as e:
         print(f"  FAIL  {label}")
-        print(f"       {e.stderr.strip()}")
+        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        print(f"       {stderr.strip()}")
         return False
 
-def run_transforms(base):
+def run_transforms(base, masked=False):
     """apply the 5 standard transforms to base, return list of pass/fail."""
     results = []
 
     # test 1 - baseline: no transformation
-    results.append(check("baseline (no transformation)", base))
+    results.append(check("baseline (no transformation)", base, masked))
 
     # test 2 - recompress at quality 90
     path = STEGO_BASE + "_q90.jpg"
     Image.open(base).save(path, quality=90)
-    results.append(check("recompress q90", path))
+    results.append(check("recompress q90", path, masked))
 
     # test 3 - recompress at quality 85
     path = STEGO_BASE + "_q85.jpg"
     Image.open(base).save(path, quality=85)
-    results.append(check("recompress q85", path))
+    results.append(check("recompress q85", path, masked))
 
     # test 4 - recompress at quality 75
     path = STEGO_BASE + "_q75.jpg"
     Image.open(base).save(path, quality=75)
-    results.append(check("recompress q75", path))
+    results.append(check("recompress q75", path, masked))
 
     # test 5 - rotate 1 degree (geometric desync, not just quantization noise)
     path = STEGO_BASE + "_rot1.jpg"
     Image.open(base).rotate(1).save(path, quality=95)
-    results.append(check("rotate 1 degree + save q95", path))
+    results.append(check("rotate 1 degree + save q95", path, masked))
 
     return results
 
@@ -113,10 +128,11 @@ def main():
     #   compression the JPEG output format adds.
     #
     # path C - AUTO-MASK: same as B, but strength is redistributed by the
-    #   structure tensor texture mask (gamma=1) instead of uniform. checks
-    #   that concentrating the payload in high-texture regions doesn't cost
-    #   robustness, not how much it helps perceptually - that's a separate
-    #   question, covered by the quality/calibration tooling, not this file.
+    #   structure tensor texture mask (gamma=1) instead of uniform, at the
+    #   SAME strength as A/B, not the same perceptual cost. this is a smoke
+    #   test for "does bit accuracy survive the redistribution", not an
+    #   iso-PSNR comparison of A vs C - that calibration is what the
+    #   quality/calibration tooling is for, this file does not attempt it.
 
     print("\n[A] pipeline (embed->JPEG q95, the README flow):")
     base_jpg = STEGO_BASE + ".jpg"
@@ -131,7 +147,7 @@ def main():
     print("\n[C] auto-mask (embed->PNG lossless, gamma=1.0, single recompress):")
     base_masked = STEGO_BASE + "_masked.png"
     embed_masked(base_masked)
-    res_c = run_transforms(base_masked)
+    res_c = run_transforms(base_masked, masked=True)
 
     print()
     pa, pb, pc = sum(res_a), sum(res_b), sum(res_c)

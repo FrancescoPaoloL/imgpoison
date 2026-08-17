@@ -15,6 +15,12 @@
 #define SS_MAGIC        0xCAFE
 #define MAGIC_BITS      16
 #define HEADER_REPEAT    5    /* odd, so majority vote never ties        */
+#define PAYLOAD_REPEAT   3    /* odd, same reason. payload bits used to have
+                                  no redundancy at all - a single marginal
+                                  bit (e.g. from mask drift between embed
+                                  and extract) had nothing protecting it.
+                                  costs capacity: 3x the pixels per payload
+                                  bit, not free. */
 
 
 /* PNG signature - see libpng.org/pub/png/spec/1.2/PNG-Structure.html */
