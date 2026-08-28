@@ -159,6 +159,40 @@ The mask is normalized before being applied, so changing the texture weighting
 does not simply increase the overall signal energy.
 
 
+## maskAzure — prototype validation
+
+Before texture masking was added to imgpoison, the same structure-tensor
+mask and gamma weighting were validated standalone in Python (`maskAzure/`),
+against real perceptual-similarity metrics (LPIPS) rather than by
+inspection. It stays untracked on `main` — kept as a reference commit on a
+local branch, not built or run as part of imgpoison itself.
+
+The prototype was iteratively reviewed with Claude Opus. Bugs caught before
+the C port started:
+
+* Structure tensor's default zero-padding fabricated fake edges at image
+  borders (fixed: reflect padding)
+* Mask normalization changed total payload energy across gamma (fixed:
+  RMS/L2-preserving normalization, not L1/mean)
+* A hard floor collapsed distinct low-texture pixels to one value (fixed:
+  additive floor)
+* Calibration reported false convergence under a tolerance tuned for the
+  wrong scale (fixed: relative tolerance, raise on failure instead of a
+  silent wrong answer)
+
+Results: masking beats uniform strength on 3 synthetic test images (~2x
+lower LPIPS at equal PSNR) and on 100 real COCO photos at iso-PSNR=42.3dB,
+TrustMark's measured operating point (~6x lower LPIPS in the mean — though
+mean±std is likely the wrong summary for a skewed distribution, and paired
+per-image statistics are still needed before treating that number as
+solid).
+
+The same review process caught further, C-specific bugs once the mask moved
+into `src/texture.c` and `src/embed_ss.c` (see Spread Spectrum below) — the
+prototype is the reference for how the mask was derived, not a second
+implementation to maintain.
+
+
 ## STRENGTH trade-off
 
 Higher strength improves robustness but makes the embedding more visible.
