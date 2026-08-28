@@ -6,6 +6,17 @@ The project implements LSB and Spread Spectrum steganography, with PNG and JPEG
 support, texture-aware embedding, payload redundancy, image analysis and
 robustness tests.
 
+| Original | LSB | Spread Spectrum | SS + auto-mask |
+|:---:|:---:|:---:|:---:|
+| ![Original](img/original.png) | ![LSB diffmap](img/diffmap_lsb.png) | ![SS diffmap](img/diffmap_ss.png) | ![SS + auto-mask diffmap](img/diffmap_ss_automask.png) |
+| — | concentrated where the payload is written | low-amplitude, spread across the image | concentrated where the texture mask found high texture |
+
+
+The project implements LSB and Spread Spectrum steganography, with PNG and JPEG
+support, texture-aware embedding, payload redundancy, image analysis and
+robustness tests.
+
+
 This is a learning project. The goal is to understand the algorithms by
 implementing them directly in C rather than relying on high-level image
 processing libraries.
