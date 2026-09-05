@@ -29,6 +29,23 @@ signal correlation, redundancy and texture-aware embedding.
 JPEG recompression can be handled. Geometric transformations such as rotation
 currently break the spatial synchronization between embedding and extraction.
 
+### Noise survives, smoothing kills
+
+The most useful thing measured here is an asymmetry between two attack
+families, and it is not close. Additive noise heavy enough to bring the
+attacked image down to 8.5dB PSNR still yields a perfectly recovered
+payload. Gaussian blur destroys extraction somewhere between sigma 0.9 and
+1.1, at an attack PSNR of 21.8dB - roughly 13dB of margin separating the
+attack that does nothing from the attack that wins.
+
+This is structural, not a tuning artifact. The pseudorandom permutation
+scatters the payload across uncorrelated pixel positions, which puts the
+signal in the high spatial frequencies. Noise adds energy there and
+correlation averages it away; any low-pass operation removes it and there
+is nothing left to correlate against. The practical consequence: the
+cheapest effective attack against this scheme costs almost nothing in
+perceived image quality.
+
 
 ## Methods
 
@@ -170,18 +187,19 @@ calibrated `--strength` values, not a comparison at matched `--strength`):
     Wilcoxon signed-rank:                p = 3.6e-14, all 76 images the same direction
 
 Held-out check on the interpolation: predicting the already-measured LPIPS
-at `--strength 3` from a fit between `--strength 2` and `4` (a real ~6.5dB
-span, not the ~1dB bracket above) gives a median relative error of 0.56%
-across 20 images - the log-linear shape holds over a real range, this
+at `--strength 3` from a fit between `--strength 2` and `4` (a ~6.5dB span,
+against the ~3.5dB bracket used above) gives a median relative error of
+0.56% across 20 images - the log-linear shape holds over a real range, this
 isn't circular.
 
 Not "8x" - that was the ratio at matched `--strength`, where gamma=1
 systematically lands ~0.9dB higher PSNR than gamma=0 (`--strength` is
-integer-only, no value hits both at once). Correcting for that gap gives
-~6.5x by a physical argument (1dB is a 1.26x MSE factor) and 6.391x by
-direct interpolation - one independent replica (an earlier run, different
-embedder and sample, gave ~6.3x) plus an arithmetic prediction confirmed
-to within 1.8%, not three independent measurements of the same thing.
+integer-only, no value hits both at once). Correcting for that gap
+(0.904dB, an MSE factor of 1.231) gives ~6.5x by a physical argument and
+6.391x by direct interpolation - one independent replica (an earlier run,
+different embedder and sample, gave ~6.3x) plus an arithmetic prediction
+confirmed to within 1.8%, not three independent measurements of the same
+thing.
 
 The IQR matters as much as the median: ~3.9x between the 25th and 75th
 percentile means how much the masking helps depends a lot on the image,
@@ -386,17 +404,24 @@ geometric synchronization the rotation test is expected to fail.
 JPEG recompression survives down to q75 in the tested image and
 configuration, on all three paths.
 
+Noise and blur are not in this suite - they are measured separately, see
+**Noise survives, smoothing kills** above.
+
 
 ## Limitations
 
-Robust to the tested JPEG recompression levels, but not to geometric
-transformations such as rotation. The PRNG is not cryptographically
-secure. The texture mask describes local image structure, not semantic
-content. Intended for learning and experimentation, not production use.
+Robust to the tested JPEG recompression levels and to heavy additive
+noise, but not to low-pass filtering and not to geometric transformations
+such as rotation. Gaussian blur at sigma ~1 destroys extraction while
+leaving the image visually close to the original (21.8dB attack PSNR),
+which makes it the cheapest effective attack on this scheme - see **Noise
+survives, smoothing kills**. The PRNG is not cryptographically secure. The
+texture mask describes local image structure, not semantic content.
+Intended for learning and experimentation, not production use.
 
-See **Limitations of the perceptual result** above for measurement
--specific caveats (sample size, TrustMark comparison, RST invariance, the
-unexplained PSNR gap).
+See **Limitations of the perceptual result** above for measurement-specific
+caveats (sample size, TrustMark comparison, RST invariance, the unexplained
+PSNR gap).
 
 
 ## Pending
