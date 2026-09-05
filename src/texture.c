@@ -1,4 +1,5 @@
 #include "../include/texture.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -245,6 +246,32 @@ float *texture_gamma_mask(const float *texture_norm, uint32_t width,
     rms = sqrtf((float)(sumsq / (double)n));
     if (rms < 1e-12f) rms = 1e-12f;
     for (size_t i = 0; i < n; i++) mask[i] /= rms;
+
+    /* diagnostic: RMS after this final re-normalization is 1.0 by
+     * construction (we just divided every value by its own measured
+     * RMS) - printing it isn't testing a hypothesis, it's confirming
+     * the algebra. What actually varies with gamma is the MEAN, E[M]:
+     * exactly 1 at gamma=0 (constant mask), strictly less than 1 for
+     * any non-constant mask (Jensen's inequality, same argument as
+     * extract_bit's SNR comment). If the PSNR gap between gamma=0 and
+     * gamma=1 at matched --strength were caused by imperfect RMS
+     * normalization, this print would show something other than
+     * 1.000 for rms - if it shows 1.000 (expected), the gap's real
+     * source is elsewhere, most likely the saturation asymmetry
+     * already found and counted (see add_signal / the Saturated:
+     * print in embed_ss.c), not the mask normalization itself.
+     * recomputed fresh on the final mask values, not reusing the
+     * pre-division sumsq above - that would silently print the wrong
+     * number. */
+    {
+        double final_sum = 0.0, final_sumsq = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            final_sum   += (double)mask[i];
+            final_sumsq += (double)mask[i] * (double)mask[i];
+        }
+        fprintf(stderr, "mask diagnostic: mean=%.6f rms=%.6f (gamma=%.2f, n=%zu)\n",
+                final_sum / (double)n, sqrt(final_sumsq / (double)n), gamma, n);
+    }
 
     return mask;
 }
