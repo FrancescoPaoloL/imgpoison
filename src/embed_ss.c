@@ -18,6 +18,16 @@
  * JPEG noise is uncorrelated with the chip so it cancels out.
  * LSB dies after JPEG. SS survives because the signal is spread
  * across hundreds of pixels, not packed in a single bit.
+ *
+ * chip_size and payload_repeat used to be the compile-time constants
+ * CHIP_SIZE and PAYLOAD_REPEAT. They are runtime parameters now, passed
+ * in from the caller (CHIP_SIZE/PAYLOAD_REPEAT in formats.h are still
+ * there as the CLI's default values, --chip-size/--payload-repeat in
+ * main.c override them) - needed to run the tool at two different
+ * operating points: the robust default for normal use and regression
+ * tests, and a smaller chip / repeat=1 point with enough resolution to
+ * actually see where the signal degrades under attack, instead of the
+ * default's large margin hiding it entirely until a cliff.
  */
 
 
@@ -52,10 +62,13 @@ static int lcg_bit(LCG *r) {
 
 
 
-/* generate chip[CHIP_SIZE] of +1/-1 values */
-static void make_chip(LCG *r, float *chip)
+/* fill a caller-provided chip[chip_size] buffer with +1/-1 values.
+ * caller owns the buffer (allocated once per ss_embed/ss_extract/
+ * ss_bit_accuracy call, not once per bit - chip_size varies at runtime
+ * now, so it can no longer be a fixed-size stack array). */
+static void make_chip(LCG *r, float *chip, uint32_t chip_size)
 {
-    for (int i = 0; i < CHIP_SIZE; i++)
+    for (uint32_t i = 0; i < chip_size; i++)
         chip[i] = lcg_bit(r) ? 1.0f : -1.0f;
 }
 
@@ -86,15 +99,16 @@ static int add_signal(uint8_t *px, uint32_t ch, float delta) {
 
 
 /* capacity check.
- * each embedded bit needs 2 blocks of CHIP_SIZE pixels (block A and B).
+ * each embedded bit needs 2 blocks of chip_size pixels (block A and B).
  * the header section = (MAGIC_BITS + HEADER_BITS) bits, each repeated
- * HEADER_REPEAT times. the payload body = payload_len*8 bits, once each.
- * see embed_bit() for why 2 blocks per bit. */
+ * HEADER_REPEAT times (fixed - not exposed on the CLI, only the payload
+ * side is). the payload body = payload_len*8 bits, each repeated
+ * payload_repeat times. see embed_bit() for why 2 blocks per bit. */
 static size_t header_bits_total(void) {
     return (size_t)(MAGIC_BITS + HEADER_BITS) * HEADER_REPEAT;
 }
-static size_t pixels_needed(size_t payload_len) {
-    return (header_bits_total() + payload_len * 8 * PAYLOAD_REPEAT) * 2 * CHIP_SIZE;
+static size_t pixels_needed(size_t payload_len, uint32_t chip_size, uint32_t payload_repeat) {
+    return (header_bits_total() + payload_len * 8 * payload_repeat) * 2 * chip_size;
 }
 
 
@@ -137,25 +151,26 @@ static void shuffle_indices(size_t *idx, size_t n, uint32_t seed)
  * using two blocks instead of one cancels out background brightness.
  * mask, if not NULL, scales strength per pixel: block A and B usually
  * land on different pixels, so each chip sample looks up its own
- * mask value instead of sharing one for the whole bit. */
+ * mask value instead of sharing one for the whole bit.
+ * chip_buf must be at least chip_size floats, caller-owned. */
 static void embed_bit(uint8_t *pixels, const size_t *perm, size_t pair_offset,
                       uint32_t ch, int bit, LCG *rng, int strength,
-                      const float *mask, size_t *saturated) {
-    float  signal  = bit ? 1.0f : -1.0f;
-    float  chip[CHIP_SIZE];
+                      const float *mask, size_t *saturated,
+                      float *chip_buf, uint32_t chip_size) {
+    float signal = bit ? 1.0f : -1.0f;
 
-    make_chip(rng, chip);
+    make_chip(rng, chip_buf, chip_size);
 
-    for (int i = 0; i < CHIP_SIZE; i++) {
+    for (uint32_t i = 0; i < chip_size; i++) {
         size_t idx_a = perm[pair_offset + i];
-        size_t idx_b = perm[pair_offset + CHIP_SIZE + i];
+        size_t idx_b = perm[pair_offset + chip_size + i];
         float  m_a   = mask ? mask[idx_a] : 1.0f;
         float  m_b   = mask ? mask[idx_b] : 1.0f;
 
         *saturated += add_signal(pixels + idx_a * ch, ch,
-                                 signal * chip[i] * strength * m_a);
+                                 signal * chip_buf[i] * strength * m_a);
         *saturated += add_signal(pixels + idx_b * ch, ch,
-                                -signal * chip[i] * strength * m_b);
+                                -signal * chip_buf[i] * strength * m_b);
     }
 }
 
@@ -168,51 +183,57 @@ static void embed_bit(uint8_t *pixels, const size_t *perm, size_t pair_offset,
  * weighted by mask when given: embed_bit scales the signal at each
  * pixel by mask[i], so an unweighted correlator is not the matched
  * filter for a non-uniform mask. with equal weights, signal ~ N*E[M]
- * (N=CHIP_SIZE) but noise ~ sigma*sqrt(N), independent of the mask -
+ * (N=chip_size) but noise ~ sigma*sqrt(N), independent of the mask -
  * the correlator's noise term never sees mask at all when unweighted.
  * so SNR ~ E[M]*sqrt(N)/sigma, and since the mask is RMS-normalized
  * (E[M^2]=1), Jensen's inequality gives E[M] <= 1 with equality only
  * at gamma=0. every other gamma would lose SNR by construction, not
  * because masking is worse. weighting the correlation by (m_a + m_b)
  * matches the filter to the actual per-sample signal amplitude and
- * removes that bias. */
+ * removes that bias.
+ * chip_buf must be at least chip_size floats, caller-owned. */
 static int extract_bit(const uint8_t *pixels, const size_t *perm, size_t pair_offset,
-                       uint32_t ch, LCG *rng, const float *mask) {
-    float  chip[CHIP_SIZE];
-
-    make_chip(rng, chip);
+                       uint32_t ch, LCG *rng, const float *mask,
+                       float *chip_buf, uint32_t chip_size) {
+    make_chip(rng, chip_buf, chip_size);
 
     float correlation = 0.0f;
-    for (int i = 0; i < CHIP_SIZE; i++) {
+    for (uint32_t i = 0; i < chip_size; i++) {
         size_t idx_a = perm[pair_offset + i];
-        size_t idx_b = perm[pair_offset + CHIP_SIZE + i];
+        size_t idx_b = perm[pair_offset + chip_size + i];
         float  diff  = pixel_luma(pixels + idx_a * ch, ch)
                      - pixel_luma(pixels + idx_b * ch, ch);
         float  m     = mask ? (mask[idx_a] + mask[idx_b]) : 2.0f;
-        correlation += diff * chip[i] * m;
+        correlation += diff * chip_buf[i] * m;
     }
 
     return correlation > 0.0f ? 1 : 0;
 }
 
 
-/* embed one logical bit redundantly across HEADER_REPEAT physical slots.
- * *slot is the running pair index; advanced by HEADER_REPEAT.
- * each repeat consumes a fresh chip from the LCG, exactly mirrored on extract. */
+/* embed one logical bit redundantly across `repeat` physical slots.
+ * *slot is the running pair index; advanced by `repeat`.
+ * each repeat consumes a fresh chip from the LCG, exactly mirrored on
+ * extract. repeat is HEADER_REPEAT for magic/header, payload_repeat
+ * (runtime, from the caller) for the payload body. */
 static void embed_bit_rep(uint8_t *pixels, const size_t *perm, size_t *slot,
                           uint32_t ch, int bit, LCG *rng, int strength,
-                          const float *mask, size_t *saturated, int repeat) {
+                          const float *mask, size_t *saturated, int repeat,
+                          float *chip_buf, uint32_t chip_size) {
     for (int r = 0; r < repeat; r++)
-        embed_bit(pixels, perm, (*slot)++ * 2 * CHIP_SIZE, ch, bit, rng, strength, mask, saturated);
+        embed_bit(pixels, perm, (*slot)++ * 2 * chip_size, ch, bit, rng, strength,
+                  mask, saturated, chip_buf, chip_size);
 }
 
 /* extract one logical bit by majority vote over `repeat` physical slots.
  * repeat must be odd so the vote can never tie. */
 static int extract_bit_rep(const uint8_t *pixels, const size_t *perm, size_t *slot,
-                           uint32_t ch, LCG *rng, const float *mask, int repeat) {
+                           uint32_t ch, LCG *rng, const float *mask, int repeat,
+                           float *chip_buf, uint32_t chip_size) {
     int ones = 0;
     for (int r = 0; r < repeat; r++)
-        ones += extract_bit(pixels, perm, (*slot)++ * 2 * CHIP_SIZE, ch, rng, mask);
+        ones += extract_bit(pixels, perm, (*slot)++ * 2 * chip_size, ch, rng, mask,
+                            chip_buf, chip_size);
     return (ones * 2 > repeat) ? 1 : 0;
 }
 
@@ -221,13 +242,13 @@ void ss_embed(uint8_t *pixels, size_t px_size,
               uint32_t width, uint32_t channels,
               const uint8_t *payload, size_t payload_len,
               uint32_t seed, uint32_t strength,
-              const float *mask){
+              const float *mask, uint32_t chip_size, uint32_t payload_repeat){
     (void)width;
 
     if (payload_len == 0 || payload_len > MAX_PAYLOAD) {
         fprintf(stderr, "invalid payload length: %zu\n", payload_len); exit(1);
     }
-    if (pixels_needed(payload_len) > px_size / channels) {
+    if (pixels_needed(payload_len, chip_size, payload_repeat) > px_size / channels) {
         fprintf(stderr, "payload too large for image\n"); exit(1);
     }
 
@@ -241,13 +262,13 @@ void ss_embed(uint8_t *pixels, size_t px_size,
      *      Image Steganography", ARL-TR-1698, 1998, sec 4.1
      *      apps.dtic.mil/sti/citations/ADA349102 */
     size_t n_pixels = total_pixels(px_size, channels);
-    size_t px_needed = pixels_needed(payload_len);
+    size_t px_needed = pixels_needed(payload_len, chip_size, payload_repeat);
 
     if (px_needed > n_pixels) {
         fprintf(stderr,
             "payload too large for image: need %zu pixels, have %zu "
-            "(CHIP_SIZE=%d, try a smaller payload or larger image)\n",
-            px_needed, n_pixels, CHIP_SIZE);
+            "(chip_size=%u, payload_repeat=%u, try a smaller payload or larger image)\n",
+            px_needed, n_pixels, chip_size, payload_repeat);
         exit(1);
     }
 
@@ -268,15 +289,23 @@ void ss_embed(uint8_t *pixels, size_t px_size,
     size_t slot = 0;
     size_t saturated = 0;
 
+    float *chip_buf = malloc((size_t)chip_size * sizeof(float));
+    if (!chip_buf) {
+        fprintf(stderr, "out of memory for chip buffer (chip_size=%u)\n", chip_size);
+        free(perm); exit(1);
+    }
+
     /* 1) magic marker (redundant) so extract can reject noise */
     for (int i = 0; i < MAGIC_BITS; i++)
         embed_bit_rep(pixels, perm, &slot, channels,
-                      (SS_MAGIC >> (MAGIC_BITS - 1 - i)) & 1, &rng, str, mask, &saturated, HEADER_REPEAT);
+                      (SS_MAGIC >> (MAGIC_BITS - 1 - i)) & 1, &rng, str, mask, &saturated,
+                      HEADER_REPEAT, chip_buf, chip_size);
 
     /* 2) 32-bit length header (redundant) */
     for (int i = 0; i < HEADER_BITS; i++)
         embed_bit_rep(pixels, perm, &slot, channels,
-                      (payload_len >> (31 - i)) & 1, &rng, str, mask, &saturated, HEADER_REPEAT);
+                      (payload_len >> (31 - i)) & 1, &rng, str, mask, &saturated,
+                      HEADER_REPEAT, chip_buf, chip_size);
 
     /* 3) payload body, MSB first, majority-vote repeated the same way the
      * header already was. a single un-repeated bit had nothing protecting
@@ -286,16 +315,18 @@ void ss_embed(uint8_t *pixels, size_t px_size,
     for (size_t i = 0; i < payload_len; i++)
         for (int b = 0; b < 8; b++)
             embed_bit_rep(pixels, perm, &slot, channels,
-                          (payload[i] >> (7 - b)) & 1, &rng, str, mask, &saturated, PAYLOAD_REPEAT);
+                          (payload[i] >> (7 - b)) & 1, &rng, str, mask, &saturated,
+                          (int)payload_repeat, chip_buf, chip_size);
 
+    free(chip_buf);
     free(perm);
 
-    printf("SS embed : %zu bytes, seed=%u, strength=%d, chip=%d\n",
-           payload_len, seed, str, CHIP_SIZE);
+    printf("SS embed : %zu bytes, seed=%u, strength=%d, chip=%u, payload_repeat=%u\n",
+           payload_len, seed, str, chip_size, payload_repeat);
     printf("SNR est. : %.0f:1 vs JPEG noise\n",
-           (float)(2 * strength * CHIP_SIZE) / (3.0f * sqrtf(CHIP_SIZE)));
+           (float)(2 * strength * chip_size) / (3.0f * sqrtf((float)chip_size)));
 
-    size_t total_samples = 2 * CHIP_SIZE * (header_bits_total() + payload_len * 8);
+    size_t total_samples = 2 * chip_size * (header_bits_total() + payload_len * 8);
     printf("Saturated: %zu / %zu samples (%.1f%%)\n",
            saturated, total_samples, 100.0 * (double)saturated / (double)total_samples);
 }
@@ -303,10 +334,11 @@ void ss_embed(uint8_t *pixels, size_t px_size,
 
 uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
                     uint32_t width, uint32_t channels,
-                    uint32_t seed, size_t *out_len, const float *mask) {
+                    uint32_t seed, size_t *out_len, const float *mask,
+                    uint32_t chip_size, uint32_t payload_repeat) {
     (void)width;
 
-    if (pixels_needed(1) > px_size / channels) {
+    if (pixels_needed(1, chip_size, payload_repeat) > px_size / channels) {
         fprintf(stderr, "image too small\n"); exit(1);
     }
 
@@ -329,17 +361,25 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
 
     size_t slot = 0;
 
+    float *chip_buf = malloc((size_t)chip_size * sizeof(float));
+    if (!chip_buf) {
+        fprintf(stderr, "out of memory for chip buffer (chip_size=%u)\n", chip_size);
+        free(perm); exit(1);
+    }
+
     /* 1) read magic and verify. mismatch = noise (wrong seed, no payload,
      *    or past the robustness limit), not a usable length. */
     uint32_t magic = 0;
     for (int i = 0; i < MAGIC_BITS; i++)
-        magic = (magic << 1) | extract_bit_rep(pixels, perm, &slot, channels, &rng, mask, HEADER_REPEAT);
+        magic = (magic << 1) | extract_bit_rep(pixels, perm, &slot, channels, &rng, mask,
+                                               HEADER_REPEAT, chip_buf, chip_size);
 
     if (magic != SS_MAGIC) {
         fprintf(stderr,
             "no valid SS payload found: magic mismatch "
             "(got 0x%04X, want 0x%04X) - wrong seed or image past "
             "robustness limit\n", magic, SS_MAGIC);
+        free(chip_buf);
         free(perm);
         exit(1);
     }
@@ -348,22 +388,26 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
     uint32_t payload_len = 0;
     for (int i = 0; i < HEADER_BITS; i++)
         payload_len = (payload_len << 1) |
-                      extract_bit_rep(pixels, perm, &slot, channels, &rng, mask, HEADER_REPEAT);
+                      extract_bit_rep(pixels, perm, &slot, channels, &rng, mask,
+                                      HEADER_REPEAT, chip_buf, chip_size);
 
     if (payload_len == 0 || payload_len > MAX_PAYLOAD) {
         fprintf(stderr, "no valid SS payload found (bad length %u)\n", payload_len);
+        free(chip_buf);
         free(perm);
         exit(1);
     }
 
-    /* 3) extract payload body, MSB first, majority vote over PAYLOAD_REPEAT
+    /* 3) extract payload body, MSB first, majority vote over payload_repeat
      * slots per bit, same scheme as the header. */
     uint8_t *payload = calloc(payload_len + 1, 1);  /* +1 for null terminator */
     for (uint32_t i = 0; i < payload_len; i++)
         for (int b = 0; b < 8; b++)
             payload[i] = (payload[i] << 1) |
-                         extract_bit_rep(pixels, perm, &slot, channels, &rng, mask, PAYLOAD_REPEAT);
+                         extract_bit_rep(pixels, perm, &slot, channels, &rng, mask,
+                                         (int)payload_repeat, chip_buf, chip_size);
 
+    free(chip_buf);
     free(perm);
     *out_len = payload_len;
     return payload;
@@ -373,7 +417,8 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
 float ss_bit_accuracy(const uint8_t *pixels, size_t px_size,
                       uint32_t width, uint32_t channels,
                       const uint8_t *known_payload, size_t payload_len,
-                      uint32_t seed, const float *mask) {
+                      uint32_t seed, const float *mask,
+                      uint32_t chip_size, uint32_t payload_repeat) {
     (void)width;
 
     size_t n_pixels = total_pixels(px_size, channels);
@@ -387,13 +432,18 @@ float ss_bit_accuracy(const uint8_t *pixels, size_t px_size,
 
     size_t slot = 0;
 
+    float *chip_buf = malloc((size_t)chip_size * sizeof(float));
+    if (!chip_buf) {
+        free(perm);
+        return 0.0f;
+    }
+
     /* skip magic + header without reading them back - just advance the
      * chip stream and slot counter the same amount ss_embed did, so the
      * payload section lines up. header_bits_total() already counts the
      * HEADER_REPEAT multiplication. */
     for (size_t i = 0; i < header_bits_total(); i++) {
-        float chip[CHIP_SIZE];
-        make_chip(&rng, chip);
+        make_chip(&rng, chip_buf, chip_size);
         slot++;
     }
 
@@ -401,14 +451,16 @@ float ss_bit_accuracy(const uint8_t *pixels, size_t px_size,
     for (size_t i = 0; i < payload_len; i++) {
         for (int b = 0; b < 8; b++) {
             int expected = (known_payload[i] >> (7 - b)) & 1;
-            for (int r = 0; r < PAYLOAD_REPEAT; r++) {
-                int got = extract_bit(pixels, perm, slot++ * 2 * CHIP_SIZE, channels, &rng, mask);
+            for (uint32_t r = 0; r < payload_repeat; r++) {
+                int got = extract_bit(pixels, perm, slot++ * 2 * chip_size, channels, &rng, mask,
+                                      chip_buf, chip_size);
                 if (got == expected) correct++;
                 total++;
             }
         }
     }
 
+    free(chip_buf);
     free(perm);
     return total > 0 ? (float)correct / (float)total : 0.0f;
 }

@@ -3,6 +3,7 @@
 #include "../include/lsb.h"
 #include "../include/analyze.h"
 #include "../include/texture.h"
+#include "../include/formats.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -11,13 +12,36 @@ static void usage(const char *prog) {
     fprintf(stderr,
         "usage:\n"
         "  %s --extract [--detect] <image.png|jpg>\n"
-        "  %s --extract --method ss --seed <n> [--mask <file>] [--auto-mask <gamma>] <image.png|jpg>\n"
+        "  %s --extract --method ss --seed <n> [--mask <file>] [--auto-mask <gamma>] [--chip-size <n>] [--payload-repeat <n>] <image.png|jpg>\n"
         "  %s --embed --method lsb --payload <text> <in.png|jpg> <out.png|jpg>\n"
-        "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] [--mask <file>] [--auto-mask <gamma>] <in.png|jpg> <out.png|jpg>\n"
+        "  %s --embed --method ss  --payload <text> --seed <n> [--strength <n>] [--mask <file>] [--auto-mask <gamma>] [--chip-size <n>] [--payload-repeat <n>] <in.png|jpg> <out.png|jpg>\n"
         "  %s --analyze [--method lsb|ss] [--seed <n>] <image.png|jpg>\n"
-        "  %s --bitacc --payload <text> --seed <n> [--mask <file>] [--auto-mask <gamma>] <image.png|jpg>\n",
+        "  %s --bitacc --payload <text> --seed <n> [--mask <file>] [--auto-mask <gamma>] [--chip-size <n>] [--payload-repeat <n>] <image.png|jpg>\n"
+        "\n"
+        "--chip-size and --payload-repeat default to CHIP_SIZE/PAYLOAD_REPEAT\n"
+        "(formats.h) when not given -- the robust operating point. A smaller\n"
+        "chip-size and --payload-repeat 1 trade that robustness for enough\n"
+        "resolution to see a signal degrade under attack instead of just\n"
+        "whether it survived. Must match between --embed and the matching\n"
+        "--extract/--bitacc, same as --seed.\n",
         prog, prog, prog, prog, prog, prog);
     exit(1);
+}
+
+/* validates chip_size >= 1 and payload_repeat odd and >= 1 -- payload_repeat
+ * even would let a majority vote tie, chip_size 0 would divide-by-zero
+ * downstream (SNR estimate, capacity check). exits with a clear message
+ * instead of the tool misbehaving three calls later. */
+static void validate_ss_params(uint32_t chip_size, uint32_t payload_repeat) {
+    if (chip_size < 1) {
+        fprintf(stderr, "--chip-size must be at least 1\n");
+        exit(1);
+    }
+    if (payload_repeat < 1 || payload_repeat % 2 == 0) {
+        fprintf(stderr, "--payload-repeat must be odd and at least 1 (got %u) "
+                        "- an even value could tie the majority vote\n", payload_repeat);
+        exit(1);
+    }
 }
 
 /* load a per-pixel mask from a flat binary file of floats, one entry
@@ -53,13 +77,17 @@ static void cmd_extract(int argc, char *argv[]) {
     int         auto_mask = 0;
     float       auto_gamma = 1.0f;
     uint32_t    seed      = 42;
+    uint32_t    chip_size = CHIP_SIZE;
+    uint32_t    payload_repeat = PAYLOAD_REPEAT;
 
     for (int i = 0; i < argc - 1; i++) {
-        if (strcmp(argv[i], "--detect")    == 0) detect     = 1;
-        if (strcmp(argv[i], "--method")    == 0) method     = argv[++i];
-        if (strcmp(argv[i], "--seed")      == 0) seed       = (uint32_t)atoi(argv[++i]);
-        if (strcmp(argv[i], "--mask")      == 0) mask_path  = argv[++i];
-        if (strcmp(argv[i], "--auto-mask") == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
+        if (strcmp(argv[i], "--detect")          == 0) detect         = 1;
+        if (strcmp(argv[i], "--method")          == 0) method         = argv[++i];
+        if (strcmp(argv[i], "--seed")            == 0) seed           = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--mask")            == 0) mask_path      = argv[++i];
+        if (strcmp(argv[i], "--auto-mask")       == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
+        if (strcmp(argv[i], "--chip-size")       == 0) chip_size      = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--payload-repeat")  == 0) payload_repeat = (uint32_t)atoi(argv[++i]);
     }
     path = argv[argc - 1];
     if (!path) usage("imgpoison");
@@ -67,6 +95,7 @@ static void cmd_extract(int argc, char *argv[]) {
         fprintf(stderr, "--mask and --auto-mask are mutually exclusive\n");
         exit(1);
     }
+    validate_ss_params(chip_size, payload_repeat);
 
     Image img = image_load(path);
     printf("Image    : %ux%u  channels=%u\n", img.width, img.height, img.channels);
@@ -91,7 +120,8 @@ static void cmd_extract(int argc, char *argv[]) {
         size_t   payload_len;
         uint8_t *payload = ss_extract(img.pixels, img.size,
                                       img.width, img.channels,
-                                      seed, &payload_len, mask);
+                                      seed, &payload_len, mask,
+                                      chip_size, payload_repeat);
         printf("Length   : %zu bytes\n", payload_len);
         printf("Payload  : %s\n", payload);
         free(payload);
@@ -124,14 +154,18 @@ static void cmd_embed(int argc, char *argv[]) {
     uint32_t    strength   = 10;  // how hard the signal is pushed into the pixels
                                   // higher = more robust after JPEG, more visible.
                                   // 10 survives JPEG at quality 95 with no bit errors
+    uint32_t    chip_size      = CHIP_SIZE;
+    uint32_t    payload_repeat = PAYLOAD_REPEAT;
 
     for (int i = 0; i < argc - 2; i++) {
-        if (strcmp(argv[i], "--method")     == 0) method     = argv[++i];
-        if (strcmp(argv[i], "--payload")    == 0) payload    = argv[++i];
-        if (strcmp(argv[i], "--seed")       == 0) seed       = (uint32_t)atoi(argv[++i]);
-        if (strcmp(argv[i], "--strength")   == 0) strength   = (uint32_t)atoi(argv[++i]);
-        if (strcmp(argv[i], "--mask")       == 0) mask_path  = argv[++i];
-        if (strcmp(argv[i], "--auto-mask")  == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
+        if (strcmp(argv[i], "--method")          == 0) method         = argv[++i];
+        if (strcmp(argv[i], "--payload")         == 0) payload        = argv[++i];
+        if (strcmp(argv[i], "--seed")            == 0) seed           = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--strength")        == 0) strength       = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--mask")            == 0) mask_path      = argv[++i];
+        if (strcmp(argv[i], "--auto-mask")       == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
+        if (strcmp(argv[i], "--chip-size")       == 0) chip_size      = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--payload-repeat")  == 0) payload_repeat = (uint32_t)atoi(argv[++i]);
     }
     input  = argv[argc - 2];
     output = argv[argc - 1];
@@ -141,6 +175,7 @@ static void cmd_embed(int argc, char *argv[]) {
         fprintf(stderr, "--mask and --auto-mask are mutually exclusive\n");
         exit(1);
     }
+    validate_ss_params(chip_size, payload_repeat);
 
     Image img = image_load(input);
     printf("Image    : %ux%u  channels=%u\n", img.width, img.height, img.channels);
@@ -163,7 +198,8 @@ static void cmd_embed(int argc, char *argv[]) {
 
     if (strcmp(method, "ss") == 0) {
         ss_embed(img.pixels, img.size, img.width, img.channels,
-                 (const uint8_t *)payload, strlen(payload), seed, strength, mask);
+                 (const uint8_t *)payload, strlen(payload), seed, strength, mask,
+                 chip_size, payload_repeat);
     } else {
         lsb_embed(img.pixels, img.size,
                   (const uint8_t *)payload, strlen(payload));
@@ -182,12 +218,16 @@ static void cmd_bitacc(int argc, char *argv[]) {
     int         auto_mask = 0;
     float       auto_gamma = 1.0f;
     uint32_t    seed      = 42;
+    uint32_t    chip_size      = CHIP_SIZE;
+    uint32_t    payload_repeat = PAYLOAD_REPEAT;
 
     for (int i = 0; i < argc - 1; i++) {
-        if (strcmp(argv[i], "--payload")   == 0) payload    = argv[++i];
-        if (strcmp(argv[i], "--seed")      == 0) seed       = (uint32_t)atoi(argv[++i]);
-        if (strcmp(argv[i], "--mask")      == 0) mask_path  = argv[++i];
-        if (strcmp(argv[i], "--auto-mask") == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
+        if (strcmp(argv[i], "--payload")         == 0) payload        = argv[++i];
+        if (strcmp(argv[i], "--seed")            == 0) seed           = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--mask")            == 0) mask_path      = argv[++i];
+        if (strcmp(argv[i], "--auto-mask")       == 0) { auto_mask = 1; auto_gamma = (float)atof(argv[++i]); }
+        if (strcmp(argv[i], "--chip-size")       == 0) chip_size      = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--payload-repeat")  == 0) payload_repeat = (uint32_t)atoi(argv[++i]);
     }
     path = argv[argc - 1];
     if (!payload || !path) usage("imgpoison");
@@ -195,6 +235,7 @@ static void cmd_bitacc(int argc, char *argv[]) {
         fprintf(stderr, "--mask and --auto-mask are mutually exclusive\n");
         exit(1);
     }
+    validate_ss_params(chip_size, payload_repeat);
 
     Image img = image_load(path);
     printf("Image    : %ux%u  channels=%u\n", img.width, img.height, img.channels);
@@ -211,7 +252,8 @@ static void cmd_bitacc(int argc, char *argv[]) {
     }
 
     float acc = ss_bit_accuracy(img.pixels, img.size, img.width, img.channels,
-                                (const uint8_t *)payload, strlen(payload), seed, mask);
+                                (const uint8_t *)payload, strlen(payload), seed, mask,
+                                chip_size, payload_repeat);
     printf("Bit acc  : %.4f (%.1f%%)\n", acc, 100.0 * acc);
 
     free(mask);

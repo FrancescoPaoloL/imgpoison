@@ -8,11 +8,12 @@ void ss_embed(uint8_t *pixels, size_t px_size,
               uint32_t width, uint32_t channels,
               const uint8_t *payload, size_t payload_len,
               uint32_t seed, uint32_t strength,
-              const float *mask);
+              const float *mask, uint32_t chip_size, uint32_t payload_repeat);
 
 uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
                     uint32_t width, uint32_t channels,
-                    uint32_t seed, size_t *out_len, const float *mask);
+                    uint32_t seed, size_t *out_len, const float *mask,
+                    uint32_t chip_size, uint32_t payload_repeat);
 
 /* diagnostic only: raw per-bit accuracy against a known payload, no
  * magic gate, no majority vote. the ordinary decode path snaps to
@@ -27,7 +28,8 @@ uint8_t *ss_extract(const uint8_t *pixels, size_t px_size,
 float ss_bit_accuracy(const uint8_t *pixels, size_t px_size,
                       uint32_t width, uint32_t channels,
                       const uint8_t *known_payload, size_t payload_len,
-                      uint32_t seed, const float *mask);
+                      uint32_t seed, const float *mask,
+                      uint32_t chip_size, uint32_t payload_repeat);
 
 #endif
 
