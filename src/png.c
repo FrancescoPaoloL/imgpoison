@@ -51,6 +51,13 @@ static uint8_t *collect_idat(const uint8_t *file, size_t file_size, size_t *idat
         uint32_t len  = u32be(file + off);
         uint8_t *type = (uint8_t *)(file + off + 4);
         off += 8;
+        /* the length field comes from the file: it must fit in what is left
+         * (data + 4-byte CRC), or a crafted PNG makes memcpy read past `file`
+         * and write past `buf`. */
+        if ((size_t)len + 4 > file_size - off) {
+            fprintf(stderr, "bad chunk length %u\n", len);
+            exit(1);
+        }
         if (memcmp(type, "IDAT", 4) == 0) {
             memcpy(buf + *idat_size, file + off, len);
             *idat_size += len;
